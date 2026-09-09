@@ -984,7 +984,7 @@
           <thead><tr><th>密钥</th><th>用途</th><th>来源</th></tr></thead>
           <tbody>
             <tr><td>Supabase anon key</td><td>前端直连数据库（只读公开表）</td><td><code>.env.local</code> → VITE_SUPABASE_ANON_KEY</td></tr>
-            <tr><td>Supabase PAT</td><td>Python 脚本执行 SQL / DDL</td><td><code>.env.local</code> → SUPABASE_PAT (sbp_...)</td></tr>
+            <tr><td>Supabase PAT</td><td>Python 脚本执行 SQL / DDL</td><td><code>.env.local</code> → SUPABASE_PAT（个人访问令牌）</td></tr>
             <tr><td>EdgeOne Pages token</td><td>H5 部署</td><td><code>.env.local</code> → EDGEONE_PAGES_API_TOKEN</td></tr>
             <tr><td>GitHub PAT</td><td>源码推送</td><td><code>.env.local</code> → GITHUB_TOKEN</td></tr>
             <tr><td>DeepSeek API key</td><td>AI 选基 / 大 PK</td><td><code>.env</code> → VITE_DEEPSEEK_API_KEY</td></tr>

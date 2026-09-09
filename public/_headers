@@ -1,0 +1,21 @@
+# EdgeOne Pages 缓存策略（Netlify 兼容格式）
+# HTML 入口：不缓存，每次回源验证；防止旧 HTML 引用已被覆盖的旧 hash 资源导致 404
+/
+  Cache-Control: public, max-age=0, must-revalidate
+
+# 带 hash 的静态资源（vite 构建产物文件名自带 hash）：永久缓存
+# hash 变了文件名就变了，CDN 与浏览器都会重新拉
+/assets/*
+  Cache-Control: public, max-age=31536000, immutable
+
+# API 路由（EdgeOne Pages Functions）不缓存
+/api/*
+  Cache-Control: public, max-age=0, must-revalidate
+
+# 其他（favicon、robots.txt、sitemap.xml 等公共文件）短期缓存
+/favicon.ico
+  Cache-Control: public, max-age=86400
+/robots.txt
+  Cache-Control: public, max-age=86400
+/sitemap.xml
+  Cache-Control: public, max-age=86400

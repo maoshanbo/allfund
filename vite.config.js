@@ -22,6 +22,11 @@ export default defineConfig({
   },
   build: {
     outDir: 'dist',
+    // EdgeOne Pages 会给 JS 资源加内容指纹并改写引用，但对 JS 内动态引用的
+    // 页面级 CSS chunk 不改写，导致 /assets/<Page>-XXXX.css 全部 404（回退
+    // index.html）→ 全站样式丢失。关闭 CSS 代码分割，把所有样式合并进单个
+    // 全局 index-*.css，规避该问题。
+    cssCodeSplit: false,
     rollupOptions: {
       output: {
         manualChunks(id) {
