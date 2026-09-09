@@ -99,7 +99,7 @@
 
 <script setup>
 import { ref } from 'vue'
-import { supabase } from '../api/supabase'
+import { supabase, rewriteSupabaseUrl, getSupabaseAnonKey } from '../api/supabase'
 import { toast } from '../composables/useToast.js'
 import { useAuth } from '../composables/useAuth.js'
 
@@ -213,33 +213,40 @@ async function submit() {
     } else {
       if (isPhone) {
         // 新账号 @dachu.user，历史账号 @allfund.user，按候选顺序逐一登录
-        let lastErr = null
+        // 邮箱和手机号登录都走 supabase Edge Function auth-login（绕开 sb-gateway 504 限流）
+        let lastResult = null
         let ok = false
         for (const email of phoneCandidates(identifier)) {
-          const { error: err } = await withAuthTimeout(
-            supabase.auth.signInWithPassword({ email, password: password.value }),
-            60000
-          )
-          if (!err) { ok = true; break }
-          lastErr = err
+          const result = await authLoginViaEdgeFunction(email, password.value)
+          if (result.ok) { ok = true; break }
+          lastResult = result
         }
         if (!ok) {
-          error.value = lastErr
-            ? translateError(typeof lastErr.message === 'string' ? lastErr.message : '')
-            : '登录失败，请稍后重试'
+          error.value = translateError(lastResult?.message || '', { status: lastResult?.status, name: lastResult?.name })
           return
         }
       } else {
-        const { error: err } = await withAuthTimeout(
-          supabase.auth.signInWithPassword({ email: identifier, password: password.value }),
-          60000
-        )
-        if (err) {
-          // 业务错误：账号密码错等
-          const errMsg = (err && typeof err.message === 'string' && err.message.trim()) ? err.message.trim() : ''
-          console.error('[LoginDialog] Supabase auth error:', JSON.stringify(err), '| extracted msg:', errMsg)
-          error.value = translateError(errMsg)
-          return
+        // 邮箱登录优先走 supabase Edge Function auth-login（在 supabase 自身网络调 auth，
+        // 绕开 EdgeOne overseas → supabase.co 跨网关 504 限流）。
+        // Edge Function 内部用 anon key 调 signInWithPassword，返真实 access/refresh token，
+        // 前端用 setSession 写入 —— 对 RLS 透明，等价于正常登录。
+        try {
+          const result = await authLoginViaEdgeFunction(identifier, password.value)
+          if (!result.ok) {
+            error.value = translateError(result.message || '', { status: result.status, name: result.name })
+            return
+          }
+        } catch (e) {
+          // Edge Function 调用本身失败（网络/网关）：回退到浏览器直连 supabase（碰运气）
+          console.warn('[LoginDialog] auth-login Edge Function 失败，回退到 supabase 直连:', e)
+          const { error: err } = await withAuthTimeout(
+            supabase.auth.signInWithPassword({ email: identifier, password: password.value }),
+            60000
+          )
+          if (err) {
+            error.value = translateError(typeof err.message === 'string' ? err.message : '', err)
+            return
+          }
         }
       }
       markLogin()
@@ -274,9 +281,80 @@ function withAuthTimeout(promise, ms = 60000) {
   ])
 }
 
-function translateError(msg) {
+/**
+ * 通过 supabase Edge Function `auth-login` 完成密码登录（绕开 sb-gateway 504 限流）。
+ * 成功：拿到 access/refresh token 后调 supabase.auth.setSession，等价于直接 signInWithPassword。
+ * 失败：返 { ok:false, message, status, name } 让上层走原 translateError 翻译。
+ *
+ * Edge Function URL：/functions/v1/auth-login，通过同域 sb-proxy 转发到 supabase 自身网络。
+ * sb-proxy 对 supabase.co 域名的所有路径已自动改写到 /api/sb-proxy?path=<encodeURIComponent>。
+ */
+async function authLoginViaEdgeFunction(email, password) {
+  const t0 = Date.now()
+  // 必须经 sb-proxy 转发到 supabase 自身网络（Edge Function 在 supabase 内部运行，
+  // 它到 supabase auth 同区域不被掐）。浏览器直连 supabase.co 在国内被 GFW 拦。
+  const url = rewriteSupabaseUrl('https://tqhtegazxykkqfcpejky.supabase.co/functions/v1/auth-login')
+  // Edge Function 端点要求 apikey header 识别项目归属（即便 --no-verify-jwt 也要）。
+  // sb-proxy 透传该 header 到上游。
+  const apikey = getSupabaseAnonKey()
+  const headers = { 'Content-Type': 'application/json' }
+  if (apikey) {
+    headers['apikey'] = apikey
+    headers['Authorization'] = `Bearer ${apikey}`
+  }
+  const resp = await fetch(url, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({ email, password }),
+  })
+  let body
+  try {
+    body = await resp.json()
+  } catch (e) {
+    return { ok: false, message: '{}', status: resp.status, name: 'AuthRetryableFetchError' }
+  }
+  const dt = Date.now() - t0
+  console.log(`[auth-login Edge Function] ${resp.status} ${dt}ms`, body)
+  if (!resp.ok) {
+    return {
+      ok: false,
+      message: (body && body.error && body.error.message) || body?.message || '',
+      status: (body && body.error && body.error.status) || resp.status,
+      name: (body && body.error && body.error.name) || 'AuthApiError',
+    }
+  }
+  // 成功：用 setSession 写入 supabase 客户端
+  const { access_token, refresh_token } = body
+  if (!access_token || !refresh_token) {
+    return { ok: false, message: 'no tokens returned', status: 500, name: 'AuthApiError' }
+  }
+  const { error: setErr } = await supabase.auth.setSession({ access_token, refresh_token })
+  if (setErr) {
+    return {
+      ok: false,
+      message: typeof setErr.message === 'string' ? setErr.message : '',
+      status: setErr.status,
+      name: setErr.name,
+    }
+  }
+  return { ok: true }
+}
+
+function translateError(msg, errObj) {
   // 防御：msg 为空/非字符串/纯空白/纯数字或 "{}" 等无意义串时统一兜底为人话
-  const s = (typeof msg === 'string' ? msg : '').trim()
+  let s = (typeof msg === 'string' ? msg : '').trim()
+  // 关键：supabase-js v2 对 5xx 错误会把 body JSON 字面序列化为 "{}" 串给 err.message。
+  // 仅看字符串无法分辨"账号密码错"与"网关 504 限流"。结合 err.name / err.status 二次判断：
+  //   - AuthRetryableFetchError（name）→ 网络/网关层抽风
+  //   - 5xx status → 上游服务异常
+  // 这些情况都不是用户凭证问题，必须明确告知"服务不可用"而不是"账号或密码错"。
+  if (errObj) {
+    const name = errObj.name || ''
+    const status = errObj.status
+    if (name === 'AuthRetryableFetchError' || (typeof status === 'number' && status >= 500)) {
+      return '登录服务暂时不可用，请稍后重试'
+    }
+  }
   if (!s || /^[\d\s{}]+$/.test(s)) return '登录失败，请检查账号密码或稍后重试'
   // 服务级错误（Supabase 网关 504/503/timeout 等），不是账号密码问题
   if (/timeout|gateway|unavailable|service unavailable/i.test(s)) return '登录服务暂时不可用，请稍后重试'

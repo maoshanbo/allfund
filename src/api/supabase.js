@@ -81,3 +81,9 @@ export const supabase = SUPABASE_URL && SUPABASE_ANON_KEY
   : null
 
 export const isSupabaseReady = () => !!supabase
+
+/**
+ * 暴露 anon / publishable key，供需要直接 fetch supabase 端点（如 Edge Function auth-login）
+ * 但又拿不到完整 supabase client 的代码使用。不会泄露任何特权密钥。
+ */
+export const getSupabaseAnonKey = () => SUPABASE_ANON_KEY
