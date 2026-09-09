@@ -15,25 +15,17 @@
 <script setup>
 import { computed } from 'vue'
 import { useRoute } from 'vue-router'
-import { useFeatureFlags } from '../composables/useFeatureFlags'
 
 const route = useRoute()
-const { featureEnabled } = useFeatureFlags()
 
-const allTabs = [
-  { key: 'home',    path: '/',                 label: '首页',     feature: 'content' },
-  { key: 'signal',  path: '/signal',           label: '信号',     feature: 'signal' },
-  { key: 'fundrank',path: '/tools/fund-rank',  label: '选基',     feature: 'fund-rank' },
-  { key: 'portfolio',path:'/portfolio',        label: '组合',     feature: 'portfolio' },
-  { key: 'content',  path: '/content',          label: '内容',     feature: 'content' },
-  { key: 'profile', path: '/profile',          label: '我的',     feature: null },
+const tabs = [
+  { key: 'home',    path: '/',                 label: '首页' },
+  { key: 'signal',  path: '/signal',           label: '信号' },
+  { key: 'fundrank',path: '/tools/fund-rank',  label: '选基' },
+  { key: 'portfolio',path:'/portfolio',        label: '组合' },
+  { key: 'content',  path: '/content',          label: '内容' },
+  { key: 'profile', path: '/profile',          label: '我的' },
 ]
-// 按全局开关过滤可见 Tab（全部展示，权限由路由级 routeAllowed 拦截）
-const tabs = computed(() => allTabs.filter(t => {
-  const f = t.feature
-  if (!f) return true                    // 无功能标签（首页/我的）始终可见
-  return featureEnabled(f)               // 全局开关开着就显示，权限由路由守卫控制
-}))
 
 const currentTab = computed(() => route.meta?.tab || 'home')
 </script>

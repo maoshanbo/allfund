@@ -81,7 +81,7 @@
           <p>投资有风险，决策需谨慎。</p>
           <p>数据来源：公开网络</p>
         </div>
-        <router-link v-if="isOwner" to="/data-center" class="profile-item">
+        <router-link to="/data-center" class="profile-item">
           <span class="pi-label">下载数据 (数据中心)</span>
           <span class="pi-arrow">›</span>
         </router-link>
@@ -102,7 +102,7 @@ import { removeFundFromPortfolio } from '../../api/user-data'
 import { supabase } from '../../api/supabase'
 
 const {
-  user, loading: authLoading, isLoggedIn, isOwner,
+  user, loading: authLoading, isLoggedIn,
   displayName, displayInitial,
   portfolios, profile,
   signOut, refreshUserData, showLogin

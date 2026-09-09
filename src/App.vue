@@ -1,11 +1,6 @@
 <template>
   <div class="app-root">
-    <!-- 公开路由：无需登录，仅渲染路由内容 -->
-    <div v-if="route.meta?.public" class="public-route">
-      <router-view />
-    </div>
-
-    <!-- 账号被封禁 -->
+    <!-- 账号被封禁（管理员主动封禁违规账号，与功能权限无关） -->
     <div v-if="blocked" class="stranger-screen">
       <div class="stranger-card">
         <div class="stranger-brand">大厨先生</div>
@@ -17,37 +12,7 @@
       </div>
     </div>
 
-    <!-- 未登录：全屏登录墙（公开内容/回调路由除外，放行以渲染应用）；
-         login-wall 功能开关关闭时，所有人可直接浏览（不弹墙） -->
-    <LoginDialog v-else-if="!authLoading && !isLoggedIn && !isPublicContentRoute && featureEnabled('login-wall')" :wall="true" @logged-in="onLoggedIn" />
-
-    <!-- 已登录但权限申请被驳回：驳回提示（优先于陌生人提示） -->
-    <div v-else-if="!authLoading && isLoggedIn && rejected" class="stranger-screen">
-      <div class="stranger-card">
-        <div class="stranger-brand">大厨先生</div>
-        <div class="stranger-title">申请已被驳回</div>
-        <p class="stranger-desc">抱歉，您提交的访问权限申请未通过审核。如有疑问可联系管理员，或点击「重新申请」补充信息再次提交。</p>
-        <div class="stranger-actions">
-          <button class="stranger-request" @click="showRequestDialog = true">重新申请</button>
-          <button class="stranger-logout" @click="handleLogout">退出登录</button>
-        </div>
-      </div>
-    </div>
-
-    <!-- 已登录但无权限：陌生人提示 -->
-    <div v-else-if="!authLoading && isLoggedIn && isStranger" class="stranger-screen">
-      <div class="stranger-card">
-        <div class="stranger-brand">大厨先生</div>
-        <div class="stranger-title">暂无访问权限</div>
-        <p class="stranger-desc">抱歉，您的账户尚未开通 大厨先生 的访问权限。如需使用，请点击「申请权限」填写信息，管理员审核通过后将为您开通对应功能。</p>
-        <div class="stranger-actions">
-          <button class="stranger-request" @click="showRequestDialog = true">申请权限</button>
-          <button class="stranger-logout" @click="handleLogout">退出登录</button>
-        </div>
-      </div>
-    </div>
-
-    <!-- 已登录且有权限：完整应用 -->
+    <!-- 完整应用：全站无权限墙，任何访客均可直接使用全部功能 -->
     <div v-else class="app-layout">
     <!-- PC 端顶部导航 -->
     <header class="govuk-header" v-if="!isMobile">
@@ -82,7 +47,7 @@
     <nav class="quick-nav">
       <div class="quick-nav__inner">
         <router-link
-          v-for="item in visibleQuickLinks"
+          v-for="item in quickLinks"
           :key="item.path"
           :to="item.path"
           class="quick-nav__item"
@@ -91,7 +56,6 @@
           {{ item.label }}
         </router-link>
         <router-link
-          v-if="isOwner"
           to="/data-center"
           class="quick-nav__item quick-nav__item--download"
           :class="{ 'quick-nav__item--active': route.path === '/data-center' }"
@@ -104,12 +68,7 @@
 
     <!-- 主内容区 -->
     <main class="app-main" :class="{ 'pc-main': !isMobile }">
-      <div v-if="!routeAllowed" class="no-feature-access">
-        <p class="no-feature-access__title">无访问权限</p>
-        <p class="no-feature-access__desc">您暂无「{{ currentFeatureLabel }}」功能的访问权限。</p>
-        <button class="no-feature-access__btn" @click="handleRequestAccess">申请访问权限</button>
-      </div>
-      <router-view v-else v-slot="{ Component }">
+      <router-view v-slot="{ Component }">
         <keep-alive :include="['FundRankPage']">
           <component :is="Component" />
         </keep-alive>
@@ -133,13 +92,9 @@
     <Toast />
     <ConfirmDialog />
 
-    <!-- 登录弹窗（非墙模式：公开路由中点击「登录/注册」触发）。
-         不再被 !authLoading 守卫：用户已主动表达登录意愿，不应被 init 卡死阻塞。 -->
+    <!-- 登录弹窗：仅由用户主动点击「登录/注册」触发，不再作为访问门槛 -->
     <LoginDialog v-if="!isLoggedIn && showLoginDialogValue" @logged-in="onLoggedIn" @close="hideLogin" />
     </div>
-
-    <!-- 申请权限弹窗：独立于各分支，任何登录状态下均可弹出 -->
-    <PermissionRequestDialog :show="showRequestDialog" @close="showRequestDialog = false" @submitted="onRequestSubmitted" />
   </div>
 </template>
 
@@ -150,30 +105,13 @@ import MobileTabBar from './components/MobileTabBar.vue'
 import Toast from './components/Toast.vue'
 import ConfirmDialog from './components/ConfirmDialog.vue'
 import LoginDialog from './components/LoginDialog.vue'
-import PermissionRequestDialog from './components/PermissionRequestDialog.vue'
-import { useAuth, FEATURES } from './composables/useAuth'
-import { useFeatureFlags } from './composables/useFeatureFlags'
+import { useAuth } from './composables/useAuth'
 import { supabase } from './api/supabase'
 
 const route   = useRoute()
 const router  = useRouter()
-const { user, isLoggedIn, isAdmin, isOwner, isStranger, blocked, rejected, loading: authLoading, hasFeature, displayName, init, signOut, showLoginDialog, showLogin, hideLogin, checkRejected } = useAuth()
+const { user, isLoggedIn, blocked, init, signOut, showLoginDialog, showLogin, hideLogin } = useAuth()
 const showLoginDialogValue = showLoginDialog  // 模板中用于 v-if 控制弹窗显隐
-const { featureEnabled, loadFeatureFlags } = useFeatureFlags()
-
-/* 公开内容路由（微信回调等）：未登录也可访问，登录墙对其放行。
- * 注意：当 login-wall 权限墙开启时，仅 meta.public 的回调路由放行，
- *       博客（content）路由不再视为公开——必须登录才能看。 */
-const isPublicContentRoute = computed(() => {
-  // 兜底：路由尚未解析完成（首屏第一帧）时，先视为公开路由，
-  // 避免 route.meta 为空导致 isPublicContentRoute 误判为 false、登录墙闪现一帧。
-  if (!route.matched || route.matched.length === 0) return true
-  // 回调类路由（OAuth 等）始终放行，否则无法完成登录流程
-  if (route.meta?.public) return true
-  // 权限墙关闭时：博客作为公开内容放行；权限墙开启时：博客也需登录
-  if (route.meta?.feature === 'content' && featureEnabled('content') && !featureEnabled('login-wall')) return true
-  return false
-})
 
 /* ---- 响应式断点 ---- */
 const isMobile = ref(window.innerWidth < 769)
@@ -182,36 +120,10 @@ function onResize() {
 }
 onMounted(async () => {
   window.addEventListener('resize', onResize)
-  // 检测新版（SPA 内部路由切换不会重新拉 chunk，靠这个让浏览器自动 reload 一次）：
-  // fetch /version.json → 与 localStorage 比对 → hash 变了 → location.reload() 重拉新 chunk
-  checkForNewVersion()
   await init()        // 初始化全局 auth（恢复 session 后再上报，确保能拿到登录邮箱）
-  loadFeatureFlags()  // 加载功能开放开关（失败回退默认，不阻塞页面）
   logVisitor()        // 上报本次访问（IP / 邮箱 / 地区 / 页面）
   loadVisitorCount()  // 拉取累计访客数（写入 visitor_logs 的总条数）
 })
-
-/* ---- 新版检测：解决「SPA 内部路由不重新拉 chunk、用户永远跑旧代码」的坑 ----
- * 部署时会把主 chunk 的 hash 写入 dist/version.json；本次启动 fetch 它，
- * 与 localStorage 中记录的「上次见到的 hash」比对，不同就 reload 一次。 */
-function checkForNewVersion() {
-  // 不 await，立即发起；reload 会丢弃整个 SPA 状态，await 没意义
-  fetch(`/version.json?_=${Date.now()}`, { cache: 'no-store' })
-    .then((r) => (r.ok ? r.json() : null))
-    .then((v) => {
-      if (!v || !v.h) return
-      const KEY = 'dachu_app_version'
-      const stored = localStorage.getItem(KEY)
-      if (stored && stored !== v.h) {
-        // 新版本：更新本地记录 + 强制 reload 拉新 chunk
-        localStorage.setItem(KEY, v.h)
-        window.location.reload()
-      } else if (!stored) {
-        localStorage.setItem(KEY, v.h)
-      }
-    })
-    .catch(() => { /* 版本探测静默失败，不阻断任何 init */ })
-}
 
 /* ---- 累计访客数（用于底部「你是第 N 位访客」）---- */
 const visitorCount = ref(null)
@@ -277,7 +189,6 @@ async function handleLogout() {
   user.value = null
   // 异步调用 signOut（不 await），即使网络超时也不影响登出体验
   supabase.auth.signOut().catch((e) => console.error('[auth] signOut error:', e))
-  // 跳转首页（当前页可能是 ownerOnly 页面，登出后无权访问）
   router.push('/')
 }
 
@@ -285,66 +196,22 @@ function onLoggedIn() {
   hideLogin()
 }
 
-/* ---- 权限申请弹窗 ---- */
-const showRequestDialog = ref(false)
-function onRequestSubmitted() {
-  showRequestDialog.value = false
-  // 重新申请后清掉「已被驳回」状态，避免仍卡在驳回屏
-  checkRejected(user.value?.email)
-}
-
-/** 「无访问权限」卡片 → 点击「申请访问权限」：
- *  未登录 → 先弹登录框；已登录 → 直接弹权限申请表单 */
-function handleRequestAccess() {
-  if (!isLoggedIn.value) {
-    showLogin()
-  } else {
-    showRequestDialog.value = true
-  }
-}
-
-/* ---- 全局金刚区 ---- */
+/* ---- 全局金刚区（全部入口常驻，不再按权限/开关过滤） ---- */
 const quickLinks = [
-  { path: '/content',          label: '博客', feature: 'content' },
-  { path: '/signal',           label: '信号', feature: 'signal' },
-  { path: '/tools/fund-rank',  label: '选基', feature: 'fund-rank' },
-  { path: '/portfolio',        label: '组合', feature: 'portfolio' },
+  { path: '/content',          label: '博客' },
+  { path: '/signal',           label: '信号' },
+  { path: '/tools/fund-rank',  label: '选基' },
+  { path: '/portfolio',        label: '组合' },
 ]
-// 按全局开关过滤可见的金刚区入口（全部展示，权限由路由级 routeAllowed 拦截）
-const visibleQuickLinks = computed(() =>
-  quickLinks.filter(item => {
-    const f = item.feature
-    if (!f) return true                    // 无功能标签的入口始终可见
-    return featureEnabled(f)               // 全局开关开着就显示，权限由路由守卫控制
-  })
-)
-
-/* ---- 当前路由的功能权限拦截（未授权功能显示「无访问权限」） ---- */
-const routeAllowed = computed(() => {
-  // ownerOnly 路由：仅管理员可进；管理员始终可进，不受功能开关影响（避免把自己锁在门外）
-  if (route.meta?.ownerOnly) return isOwner.value
-  const feat = route.meta?.feature
-  if (feat && !featureEnabled(feat)) return false  // 全局关闭的功能：任何登录用户都无权限
-  if (isAdmin.value) return true
-  if (!feat) return true
-  if (feat === 'content') return true              // 内容公开可读
-  return hasFeature(feat)
-})
-const currentFeatureLabel = computed(() => {
-  if (route.meta?.ownerOnly) return '管理/编辑'
-  const feat = route.meta?.feature
-  const f = FEATURES.find(x => x.key === feat)
-  return f ? f.label : ''
-})
 
 /* ---- Tab 数据（仅移动端 TabBar 使用）---- */
 const tabs = [
-  { key: 'home',      path: '/',                 label: '首页',  feature: null },
-  { key: 'content',   path: '/content',          label: '博客',  feature: 'content' },
-  { key: 'signal',    path: '/signal',           label: '信号',  feature: 'signal' },
-  { key: 'fundrank',  path: '/tools/fund-rank',  label: '选基',  feature: 'fund-rank' },
-  { key: 'portfolio', path: '/portfolio',        label: '组合',  feature: 'portfolio' },
-  { key: 'profile',   path: '/profile',          label: '我的',  feature: null },
+  { key: 'home',      path: '/',                 label: '首页' },
+  { key: 'content',   path: '/content',          label: '博客' },
+  { key: 'signal',    path: '/signal',           label: '信号' },
+  { key: 'fundrank',  path: '/tools/fund-rank',  label: '选基' },
+  { key: 'portfolio', path: '/portfolio',        label: '组合' },
+  { key: 'profile',   path: '/profile',          label: '我的' },
 ]
 
 const pageTitle = computed(() => route.meta?.title || '投资助手')
@@ -558,11 +425,8 @@ const showBack  = computed(() => {
   .mobile-header { display: flex; }
 }
 
-/* ========== 登录墙 / 陌生人 / 无功能权限 ========== */
+/* ========== 封禁提示屏 ========== */
 .app-root { min-height: 100vh; }
-
-/* 公开路由：极简容器，仅承载公开路由内容 */
-.public-route { min-height: 100vh; }
 
 .stranger-screen {
   min-height: 100vh;
@@ -598,27 +462,4 @@ const showBack  = computed(() => {
 .stranger-actions {
   display: flex; gap: var(--space-sm); justify-content: center; flex-wrap: wrap;
 }
-.stranger-request {
-  background: #ffffff; color: #1d70b8; border: 1px solid #1d70b8;
-  padding: 10px 28px; font-size: 16px; font-weight: 700; cursor: pointer;
-}
-.stranger-request:hover { background: #f3f3f3; }
-
-.no-feature-access {
-  max-width: 600px; margin: 60px auto; padding: 40px;
-  text-align: center;
-  background: #ffffff; border: 2px solid var(--border); border-left: 6px solid #d4351c;
-}
-.no-feature-access__title {
-  font-size: 24px; font-weight: 700; color: #d4351c; margin: 0 0 var(--space-md);
-}
-.no-feature-access__desc {
-  font-size: 16px; color: var(--text-secondary); margin: 0;
-}
-.no-feature-access__btn {
-  display: inline-block; margin-top: var(--space-md);
-  padding: 10px 24px; font-size: 16px; font-weight: 700;
-  color: #fff; background: #1d70b8; border: none; cursor: pointer;
-}
-.no-feature-access__btn:hover { background: #003078; }
 </style>

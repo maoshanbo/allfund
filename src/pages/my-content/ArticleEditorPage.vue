@@ -150,7 +150,8 @@ const route = useRoute()
 const router = useRouter()
 const isEdit = computed(() => !!route.params.id)
 
-// 可管理内容：仅管理员可写/编辑/发布（路由 ownerOnly 亦拦截非管理员）
+// 可管理内容：路由已对所有人开放（无权限墙），但写入/发布仍限管理员，
+// 由数据库 RLS 与此处 UI 双重把关，避免任何人随意发布文章。
 const canManageContent = computed(() => isOwner.value)
 const fileInput = ref(null)
 const textarea = ref(null)
