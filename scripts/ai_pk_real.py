@@ -50,6 +50,13 @@ os.environ["SUPABASE_PAT"] = PAT
 MGMT_URL = f"https://api.supabase.com/v1/projects/{REF}/database/query"
 MGMT_HEADERS = {"Authorization": f"Bearer {PAT}", "Content-Type": "application/json"}
 
+# Management API 偶发超时/连接中断（如 2026-09-01 整轮调仓因
+# "Connection terminated due to connection timeout" 直接失败，当月 0 数据）。
+# 这里统一做「超时 + 重试 + 退避」，避免一次瞬时故障报废整期调仓。
+MGMT_TIMEOUT = 180          # 单次请求超时（秒），比原来的 120 更宽松
+MGMT_MAX_RETRIES = 3        # 最多尝试 3 次
+MGMT_BACKOFF = 10           # 退避基数：第 n 次失败后 sleep 10*n 秒
+
 # ===== 候选池参数 =====
 POOL_PER_CAT = 25          # 每个二级分类取 Top N（按 k_all 倒序）作为单品候选
 CANDIDATE_SELECT = "c,n,t0,t1,k_all,r1y,r3y,r5y,dd1y,sr1y,fund_scale"
@@ -75,14 +82,50 @@ def norm_name(n):
 
 
 def mgmt_query(sql, expect_ok=(200, 201)):
-    r = requests.post(MGMT_URL, headers=MGMT_HEADERS, json={"query": sql}, timeout=120)
-    if r.status_code not in expect_ok:
-        print(f"[MGMT ERR] {r.status_code}: {r.text[:400]}")
-        raise SystemExit(1)
-    try:
-        return r.json()
-    except Exception:
-        return None
+    """调 Supabase Management API 执行 SQL，带超时重试与指数退避。
+
+    背景：2026-09-01 的月度调仓因为一次 "Connection terminated due to
+    connection timeout" 直接 SystemExit(1)，整期 0 条数据 —— 一次瞬时网络
+    故障就报废整月调仓，代价太大。故对「网络异常 / 429 / 5xx / 响应体含
+    timeout」统一重试，仍失败才退出。
+    """
+    last_err = None
+    for attempt in range(1, MGMT_MAX_RETRIES + 1):
+        # 1) 网络层异常（超时 / 连接中断）
+        try:
+            r = requests.post(MGMT_URL, headers=MGMT_HEADERS,
+                              json={"query": sql}, timeout=MGMT_TIMEOUT)
+        except (requests.exceptions.Timeout, requests.exceptions.RequestException) as e:
+            last_err = f"网络异常 {type(e).__name__}: {e}"
+            print(f"[MGMT RETRY] 第 {attempt}/{MGMT_MAX_RETRIES} 次失败（{last_err[:160]}）")
+            if attempt < MGMT_MAX_RETRIES:
+                time.sleep(MGMT_BACKOFF * attempt)
+                continue
+            break
+
+        body = (r.text or "")
+        # 2) 服务端瞬时故障 / 连接超时（Supabase 会以 544 等状态码回
+        #    "Failed to run sql query: Connection terminated due to connection timeout"）
+        transient = r.status_code in (429, 500, 502, 503, 504) or "timeout" in body.lower()
+        if transient:
+            last_err = f"{r.status_code}: {body[:200]}"
+            print(f"[MGMT RETRY] 第 {attempt}/{MGMT_MAX_RETRIES} 次失败（{last_err}）")
+            if attempt < MGMT_MAX_RETRIES:
+                time.sleep(MGMT_BACKOFF * attempt)
+                continue
+            break
+
+        # 3) 真正的业务/语法错误 —— 重试无意义，直接退出
+        if r.status_code not in expect_ok:
+            print(f"[MGMT ERR] {r.status_code}: {body[:400]}")
+            raise SystemExit(1)
+        try:
+            return r.json()
+        except Exception:
+            return None
+
+    print(f"[MGMT ERR] 重试 {MGMT_MAX_RETRIES} 次仍失败，最后错误：{last_err}")
+    raise SystemExit(1)
 
 
 def rest_select(params, table="fund_scores"):
@@ -344,8 +387,10 @@ def call_qwen(model_id, prompt_messages, key):
         }
         if extra:
             body.update(extra)
+        # 2026-09 期次：MiniMax-M3 走百炼时 Step2 在 150s 读超时失败
+        # （Read timed out (read timeout=150)）。推理型模型更慢，放宽到 300s。
         r = requests.post(url, headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
-                          json=body, timeout=150)
+                          json=body, timeout=300)
         if r.status_code != 200:
             raise RuntimeError(f"百炼 API 返回 {r.status_code}: {r.text[:400]}")
         msg = r.json()["choices"][0]["message"]
@@ -570,10 +615,22 @@ def main():
         sys.exit(1)
 
     ok = 0
+    failed = []
     for m in models:
         if run_model(m, cat_summary, period_month, args.dry_run):
             ok += 1
+        else:
+            failed.append(m["id"])
     print(f"\n=== 完成：{ok}/{len(models)} 个模型成功生成两层选基 ===")
+
+    # 只要有一个模型没跑出来就非零退出：2026-09 曾出现「4/7 成功但 GitHub
+    # Actions 仍显示绿灯」，导致豆包 403 / Kimi 未开通 / MiniMax 超时这三个
+    # 问题被掩盖了整整一个月。这里让失败显式暴露，便于及时修授权。
+    if failed:
+        print(f"[WARN] 以下 {len(failed)} 个模型未生成，需检查 API 授权或模型是否已开通：")
+        for fid in failed:
+            print(f"       - {fid}")
+        sys.exit(1)
 
 
 if __name__ == "__main__":
