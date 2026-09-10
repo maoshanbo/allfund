@@ -168,6 +168,62 @@
           </div>
         </div>
       </div>
+
+      <hr class="intro-divider" />
+
+      <div class="version-block">
+        <div class="version-block-title">稳定版本 · Stable Releases</div>
+        <p class="section-desc">每次发版同步更新 package.json、GitHub tag、EdgeOne Pages 部署。本节作为版本锚点，供回滚与比对参考。</p>
+
+        <table class="version-table">
+          <thead>
+            <tr><th>版本</th><th>日期</th><th>Git Commit</th><th>状态</th></tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><strong>v4.0</strong></td>
+              <td>2026-09-10</td>
+              <td><code>7caa3077</code></td>
+              <td><span class="version-current">当前线上</span></td>
+            </tr>
+            <tr>
+              <td>v3.3</td>
+              <td>2026-06-15</td>
+              <td><code>ac2a6226</code></td>
+              <td><span class="version-history">历史版本</span></td>
+            </tr>
+          </tbody>
+        </table>
+
+        <div class="vd-title">v4.0 · 2026-09-10（当前线上）</div>
+        <div class="vd-row"><span class="vd-key">package.json</span><span class="vd-val"><code>version: 4.0.0</code>（同步修正长期未维护的占位值 1.0.0）</span></div>
+        <div class="vd-row"><span class="vd-key">EdgeOne 部署</span><span class="vd-val">dachu.me 权限墙版，部署 ID <code>dpn7odsislil</code>，全局 CSS <code>index-BaxHFwTw.css</code> 188409B text/css（合并修复生效）</span></div>
+        <div class="vd-row"><span class="vd-key">距上一版本</span><span class="vd-val">397 个 commit（v3.3 → v4.0）</span></div>
+        <div class="vd-row">
+          <span class="vd-key">主要变更</span>
+          <span class="vd-val">
+            <ol class="vd-list">
+              <li><strong>权限体系恢复</strong>：从「全开放」反转回「需授权」——登录墙 + 功能权限墙（<code>useFeatureFlags</code>：信号 / 选基 / 组合 / 内容 + 首页权限墙）+ 数据中心仅管理员 + 权限申请流程（<code>PermissionRequestDialog</code>）</li>
+              <li><strong>AI 大 PK 月度调仓修复</strong>：Supabase Management API 加重试（180s / 3 次 / 退避 10s）+ call_qwen 超时 150→300s + 失败模型汇总后 <code>sys.exit(1)</code>，不再用绿灯掩盖部分失败。9 月已补跑至 5/7（豆包 403 / Kimi 404 / 文心 403 待授权）</li>
+              <li><strong>UI 样式根治</strong>：vite <code>build.cssCodeSplit: false</code>，把全部 CSS 合并到单个全局样式（188KB），根治 EdgeOne 不改写 JS 内 CSS 引用导致的页面级 CSS 404 → SPA fallback → 全站无样式</li>
+              <li><strong>登录稳定性</strong>：LoginDialog 自动重试 + 中断按钮 + 清晰错误文案；<code>HARD_INIT_TIMEOUT_MS=8000</code>；认证双路并行 race（direct Supabase + sb-proxy）</li>
+              <li><strong>移除微信扫码登录</strong>：登录按钮 / wechatLogin / 回调页 / edge function 源码全清</li>
+            </ol>
+          </span>
+        </div>
+        <div class="vd-row">
+          <span class="vd-key">后端 / 数据中心</span>
+          <span class="vd-val">
+            Supabase 项目 <code>tqhtegazxykkqfcpejky</code>（新加坡）正常。三条 GitHub Actions 流水线：
+            <ul class="vd-list">
+              <li><code>update-scores.yml</code>：每日 21:30（北京时间）增量更新 fund_scores（3 级流水线 staging → test → promote）</li>
+              <li><code>update-allocation-quarterly.yml</code>：每日 22:30 资产配置季度更新</li>
+              <li><code>ai-pk-monthly.yml</code>：每月 1 号 UTC 15:00（北京时间 23:00）AI 大 PK 自动调仓</li>
+            </ul>
+            所有 ETL 步骤通过 <code>etl_run_log</code> 表上报状态，前端通过本页「数据下载」卡实时查看。
+          </span>
+        </div>
+      </div>
     </div>
 
     <!-- 用户权限管理（仅管理员可见） -->
@@ -2741,4 +2797,33 @@ watch(isOwner, (val) => {
 .status-pending { background: #f3f2f1; color: #6b7280; }
 .status-approved { background: #00703c; color: #fff; }
 .status-rejected { background: #d4351c; color: #fff; }
+
+/* 稳定版本 · Stable Releases */
+.intro-divider { border: 0; border-top: 1px solid var(--border); margin: var(--space-lg) 0 var(--space-md); }
+.version-block-title {
+  font-size: 20px; font-weight: 700; color: var(--text-primary);
+  padding-bottom: var(--space-sm); margin-bottom: var(--space-md);
+  border-bottom: 2px solid var(--text-primary);
+}
+.version-table { width: 100%; border-collapse: collapse; font-size: 14px; margin-bottom: var(--space-md); }
+.version-table th {
+  text-align: left; padding: var(--space-sm); font-weight: 700;
+  background: #f3f2f1; border-bottom: 2px solid var(--text-primary);
+  color: var(--text-primary);
+}
+.version-table td { padding: var(--space-sm); border-bottom: 1px solid var(--border); vertical-align: top; }
+.version-table code { background: #f3f2f1; padding: 1px 5px; font-family: monospace; font-size: 12px; color: var(--text-primary); }
+.version-current { background: #00703c; color: #fff; padding: 2px 8px; font-size: 12px; font-weight: 700; }
+.version-history { background: #f3f2f1; color: #505a5f; padding: 2px 8px; font-size: 12px; font-weight: 700; border: 1px solid var(--border); }
+.vd-title { font-size: 16px; font-weight: 700; color: var(--text-primary); margin-top: var(--space-md); margin-bottom: var(--space-sm); padding-bottom: 4px; border-bottom: 1px solid var(--border); }
+.vd-row { display: flex; border-bottom: 1px solid var(--border); padding: var(--space-sm) 0; }
+.vd-key { flex: 0 0 140px; font-weight: 700; color: var(--text-primary); font-size: 14px; }
+.vd-val { flex: 1; font-size: 14px; color: var(--text-secondary); line-height: 1.7; }
+.vd-val code { background: #f3f2f1; padding: 1px 5px; border-radius: 2px; font-family: monospace; font-size: 12px; color: var(--text-primary); }
+.vd-list { margin: 4px 0; padding-left: 20px; }
+.vd-list li { margin-bottom: 4px; line-height: 1.6; }
+@media (max-width: 640px) {
+  .vd-row { flex-direction: column; }
+  .vd-key { flex-basis: auto; margin-bottom: 4px; }
+}
 </style>
