@@ -113,8 +113,9 @@ const routes = [
     meta: {
       tab: 'tools',
       feature: 'data-center',
+      ownerOnly: true,
       title: '管理',
-      description: '管理：提供数据中心的数据下载与用户管理等功能。',
+      description: '管理：提供数据中心的数据下载与用户管理（含权限申请审批）等功能。',
       keywords: '管理中心,基金数据,数据中心,基金基本信息,宏观数据'
     }
   },
@@ -129,8 +130,9 @@ const routes = [
     }
   },
   // ===== 我的内容（个人博客栏目，类公众号）=====
-  // 全站已取消权限墙：路由不再设置 ownerOnly，任何访问者均可进入。
-  // 写入类操作（发布/编辑/删除文章）仍由数据库 RLS 策略把关。
+  // 权限模型（站长明确）：
+  //  - 阅读：公开可读（任何登录用户均可查看，仅代表个人观点）；
+  //  - 写/发布/编辑/删除：仅管理员可操作（ownerOnly），其他用户无任何写入口。
   {
     path: '/content',
     component: () => import('../pages/my-content/MyContentPage.vue'),
@@ -158,6 +160,7 @@ const routes = [
     component: () => import('../pages/my-content/ArticleEditorPage.vue'),
     meta: {
       tab: 'content',
+      ownerOnly: true,
       title: '写文章',
       description: '撰写独立性研究文章。',
       keywords: '写文章,独立研究'
@@ -168,6 +171,7 @@ const routes = [
     component: () => import('../pages/my-content/ArticleEditorPage.vue'),
     meta: {
       tab: 'content',
+      ownerOnly: true,
       title: '编辑文章',
       description: '编辑独立性研究文章。',
       keywords: '编辑文章,独立研究'

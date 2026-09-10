@@ -1,12 +1,15 @@
 /**
- * useAuth.js — Supabase Auth 单例
+ * useAuth.js — Supabase Auth 单例 + 功能权限
  *
  * 全局唯一 auth 状态，App.vue 初始化后所有组件共享同一状态。
  *
- * 权限模型（全站已取消权限墙与登录墙）：
- *  - 任何访客（含未登录）均可访问全部页面与功能，无需授权；
- *  - 登录为可选项，仅用于组合、关注等需要绑定账号的数据；
- *  - 管理员（ADMIN_EMAIL 或 user_permissions.is_admin）额外保留封禁等管理能力。
+ * 权限模型：
+ *  - 未登录：看不到任何内容（App.vue 登录墙拦截）
+ *  - 管理员（ADMIN_EMAIL）：看到全部功能
+ *  - 其他已登录用户：按 user_permissions.enabled_features 显示对应功能；
+ *    若未开通任何功能，则显示「陌生人，无访问权限」
+ *
+ * 注册/登录由 LoginDialog.vue（wall 模式）统一处理，本模块提供状态读取与退出。
  */
 import { ref, computed } from 'vue'
 import { supabase, rewriteSupabaseUrl } from '../api/supabase'
@@ -18,22 +21,35 @@ const SESSION_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000
 const LS_LOGIN_AT = 'dachu_auth_login_at'
 const LS_LOGIN_AT_LEGACY = 'allfund_auth_login_at'
 
-// 唯一授权管理员账户（保留封禁等管理能力）
+// 数据中心（数据下载 / 用户权限管理）唯一授权管理员账户
 export const ADMIN_EMAIL = '57502460@qq.com'
+
+// 可授予用户的功能清单（数据中心「用户权限管理」勾选用）
+export const FEATURES = [
+  { key: 'fund-rank', label: '选基', desc: '靠谱指数评分、基金详情、基金对比' },
+  { key: 'signal',    label: '信号', desc: '宏观信号、股债性价比、风格因子、行业估值' },
+  { key: 'portfolio', label: '组合', desc: '自建组合、AI 组合、组合回测' },
+  { key: 'content',   label: '内容', desc: '独立性研究文章发布与管理' },
+  { key: 'admin',     label: '管理员', desc: '全部功能权限 + 数据中心(管理)管理权限，可管理其他用户' },
+]
 
 // ---- 全局单例状态 ----
 const user = ref(null)
+// 初始为 true：auth 未初始化完成前不渲染登录墙，避免首屏闪现登录页
 const loading = ref(true)
 const portfolios = ref([])
 const profile = ref(null)
 const showLoginDialog = ref(false)
 
-// 管理员标记（来自 user_permissions 表；管理员邮箱兜底）
+// 功能权限状态（来自 user_permissions 表；管理员邮箱兜底全开）
 const permissions = ref({ is_admin: false, enabled_features: [] })
 const permissionsReady = ref(false)
 
 // 账号是否被封禁（命中 blocked_users 表时为 true，App 显示封禁屏）
 const blocked = ref(false)
+
+// 权限申请是否被驳回（命中 permission_requests.status='rejected' 时为 true，App 显示驳回屏）
+const rejected = ref(false)
 
 // 是否已初始化（App.vue 调用 init 后为 true）
 let _initDone = false
@@ -47,8 +63,28 @@ export function useAuth() {
     !!user.value && (user.value.email === ADMIN_EMAIL || permissions.value.is_admin)
   )
 
-  /** 是否为数据中心授权账户（主管理员 或 被授予管理员权限的用户） */
+  /** 是否为数据中心授权账户（主管理员 或 被授予管理员权限的用户，可访问数据中心与权限管理） */
   const isOwner = computed(() => user.value?.email === ADMIN_EMAIL || permissions.value.is_admin)
+
+  /** 已开通的功能 key 列表 */
+  const enabledFeatures = computed(() => permissions.value.enabled_features || [])
+
+  /** 是否已开通任意功能（管理员恒为 true） */
+  const hasAnyAccess = computed(() => isAdmin.value || (permissions.value.enabled_features || []).length > 0)
+
+  /** 陌生人：已登录但既不是管理员、也未开通任何功能 → 显示「无访问权限」 */
+  const isStranger = computed(() =>
+    !!user.value && !isAdmin.value && (permissions.value.enabled_features || []).length === 0
+  )
+
+  /** 当前用户是否拥有某功能权限 */
+  function hasFeature(key) {
+    if (!user.value) return false
+    if (user.value.email === ADMIN_EMAIL) return true
+    if (permissions.value.is_admin) return true
+    const f = permissions.value.enabled_features || []
+    return f.includes('all') || f.includes(key)
+  }
 
   /** 初始化：App.vue 挂载时调用，恢复 session 并监听状态变更 */
   async function init() {
@@ -120,9 +156,10 @@ export function useAuth() {
     })
   }
 
-  /** 加载当前用户的管理员标记（管理员邮箱兜底，DB 不存在时也不报错） */
+  /** 加载当前用户的功能权限（管理员邮箱兜底全开，DB 不存在时也不报错） */
   async function loadPermissions(email) {
     permissionsReady.value = false
+    rejected.value = false
     if (!email) {
       permissions.value = { is_admin: false, enabled_features: [] }
       permissionsReady.value = true
@@ -150,6 +187,50 @@ export function useAuth() {
     } finally {
       permissionsReady.value = true
     }
+    // 注意：rejected 检查放在 finally 之后，即便权限加载失败也独立判断
+    await checkRejected(email)
+  }
+
+  /** 检查当前登录用户的权限申请是否被驳回（读取 permission_requests，命中 status='rejected' 则置 rejected=true） */
+  async function checkRejected(email) {
+    if (!email) { rejected.value = false; return }
+    try {
+      const { data, error } = await supabase
+        .from('permission_requests')
+        .select('user_email')
+        .eq('user_email', email)
+        .eq('status', 'rejected')
+        .maybeSingle()
+      const isRejected = !!data && !error
+      rejected.value = isRejected
+    } catch (e) {
+      rejected.value = false
+    }
+  }
+
+  /** 保存某用户的权限（仅管理员调用，依赖 RLS 策略：`auth.email() = '57502460@qq.com'`） */
+  async function savePermissions(email, payload) {
+    if (!supabase) throw new Error('未连接数据库')
+    const { error } = await supabase
+      .from('user_permissions')
+      .upsert({
+        user_email: email,
+        is_admin: !!payload.is_admin,
+        enabled_features: payload.enabled_features || [],
+        granted_by: user.value?.email || null,
+        updated_at: new Date().toISOString(),
+      }, { onConflict: 'user_email' })
+    if (error) throw error
+  }
+
+  /** 删除某用户的权限记录（仅管理员调用） */
+  async function deletePermissions(email) {
+    if (!supabase) throw new Error('未连接数据库')
+    const { error } = await supabase
+      .from('user_permissions')
+      .delete()
+      .eq('user_email', email)
+    if (error) throw error
   }
 
   /** 检查当前登录用户是否被封禁（读取 blocked_users，命中则置 blocked=true） */
@@ -250,6 +331,7 @@ export function useAuth() {
     profile.value = null
     permissions.value = { is_admin: false, enabled_features: [] }
     permissionsReady.value = true
+    rejected.value = false
   }
 
   /** 打开登录弹窗（全局触发） */
@@ -281,10 +363,10 @@ export function useAuth() {
   }
 
   return {
-    user, loading, isLoggedIn, isAdmin, isOwner, permissionsReady, blocked,
+    user, loading, isLoggedIn, isAdmin, isOwner, isStranger, hasAnyAccess, enabledFeatures, permissionsReady, blocked, rejected,
     displayName, displayInitial, portfolios, profile,
-    init, signOut, refreshUserData, loadPermissions,
-    checkBlocked, blockUser, unblockUser,
+    init, signOut, refreshUserData, loadPermissions, savePermissions, deletePermissions, hasFeature,
+    checkRejected, checkBlocked, blockUser, unblockUser,
     showLoginDialog, showLogin, hideLogin, markLogin, wechatLogin,
   }
 }
