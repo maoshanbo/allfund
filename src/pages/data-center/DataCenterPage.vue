@@ -3,6 +3,13 @@
     <!-- 页面标题 -->
     <h1 class="page-title">管理</h1>
 
+    <!-- 无访问权限提示（仅授权账户可见） -->
+    <div class="no-access" v-if="!isOwner">
+      <p class="no-access__title">无访问权限</p>
+      <p class="no-access__desc">管理仅对授权账户开放，如需访问请使用授权账户登录。</p>
+    </div>
+
+    <template v-else>
     <p class="page-desc">大厨先生 数据库全部表一览。选择需要下载的数据表，点击下载 Excel 文件。数据每日 21:30（北京时间）自动更新。</p>
 
     <!-- 管理中心 header + tab 导航 -->
@@ -14,7 +21,7 @@
           class="mgmt-tab"
           :class="{ 'mgmt-tab--active': activeTab === 'users' }"
           @click="activeTab = 'users'"
-        >用户分析</button>
+        >用户管理</button>
         <button
           type="button"
           class="mgmt-tab"
@@ -163,6 +170,142 @@
       </div>
     </div>
 
+    <!-- 用户权限管理（仅管理员可见） -->
+    <div class="card" v-if="isOwner" v-show="activeTab==='users'">
+      <div class="card-title">用户权限管理</div>
+      <p class="section-desc">为注册用户开通功能：勾选需开通的功能后点击「保存」生效。未开通任何功能的用户登录后将显示「陌生人，无访问权限」。勾选「管理员」即授予该用户数据中心(管理)管理权限，可继续管理其他用户（主管理员账号固定不可改）。</p>
+
+      <!-- 添加用户 -->
+      <div class="perm-add">
+        <input
+          v-model.trim="newEmail"
+          class="perm-email-input"
+          type="email"
+          placeholder="输入用户邮箱，如 user@example.com"
+          @keyup.enter="addPermission"
+        />
+        <div class="perm-features">
+          <label v-for="f in permFeatures" :key="f.key" class="perm-feature">
+            <input type="checkbox" :value="f.key" v-model="newFeatures" /> {{ f.label }}
+          </label>
+        </div>
+        <div class="perm-quick">
+          <button type="button" class="btn-all" @click="newFeatures = FEATURES.map(f => f.key)">全部</button>
+          <button type="button" class="btn-none" @click="newFeatures = []">全否</button>
+        </div>
+        <button class="btn-login" :disabled="permSaving || !newEmail" @click="addPermission">添加并保存</button>
+      </div>
+
+      <div v-if="permMsg" class="perm-msg" :class="permMsgType">{{ permMsg }}</div>
+
+      <!-- 用户权限列表 -->
+      <table class="data-table perm-table" v-if="permUsers.length > 0">
+        <thead>
+          <tr>
+            <th class="col-perm-email">用户名</th>
+            <th class="col-perm-features">开通功能</th>
+            <th class="col-perm-granted">开通人</th>
+            <th class="col-perm-pwd">密码状态</th>
+            <th class="col-perm-action">操作</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr v-for="row in permUsers" :key="row.user_email">
+            <td class="col-perm-email">
+              <span
+                class="ua-name-link"
+                role="button"
+                tabindex="0"
+                :title="row.user_email === adminEmail ? '管理员账户' : '点击查看用户详情'"
+                @click="openUserDetail(row)"
+                @keydown.enter="openUserDetail(row)"
+              >{{ displayUsername(row.user_email) }}</span>
+            </td>
+            <td class="col-perm-features">
+              <span v-if="row.user_email === adminEmail" class="perm-all">全部功能（主管理员）</span>
+              <template v-else>
+                <div class="perm-quick">
+                  <button type="button" class="btn-all" @click="row._features = FEATURES.map(f => f.key)">全部</button>
+                  <button type="button" class="btn-none" @click="row._features = []">全否</button>
+                </div>
+                <label v-for="f in permFeatures" :key="f.key" class="perm-feature">
+                  <input type="checkbox" :value="f.key" v-model="row._features" /> {{ f.label }}
+                </label>
+              </template>
+            </td>
+            <td class="col-perm-granted">{{ row.granted_by || '—' }}</td>
+            <td class="col-perm-pwd">
+              <template v-if="passwordInfo[row.user_email]">
+                <span class="pwd-tag" :class="passwordInfo[row.user_email].is_weak_password ? 'pwd-weak' : 'pwd-ok'">
+                  {{ passwordInfo[row.user_email].is_weak_password ? '弱密码 123456' : '已自定义' }}
+                </span>
+                <div class="pwd-time">{{ passwordInfo[row.user_email].last_change ? fmtTime(passwordInfo[row.user_email].last_change) : '—' }}</div>
+              </template>
+              <span v-else class="text-muted">—</span>
+            </td>
+            <td class="col-perm-action">
+              <button class="btn-download" :disabled="row._saving" @click="saveRow(row)">保存</button>
+              <button class="btn-reset" :disabled="row._saving || row.user_email === adminEmail" @click="resetPassword(row)">重置密码</button>
+              <button class="btn-remove" :disabled="row._saving || row.user_email === adminEmail" @click="removeRow(row)">删除</button>
+            </td>
+          </tr>
+        </tbody>
+      </table>
+      <p class="section-desc" v-else>暂无用户权限记录。</p>
+    </div>
+
+    <!-- 权限申请（陌生人 → 管理员审批） -->
+    <div class="card" v-show="activeTab==='users'">
+      <div class="card-title">权限申请</div>
+      <p class="section-desc">陌生人提交权限申请后在此审批。通过 将按所选功能写入用户权限；驳回 仅标记状态。</p>
+
+      <div v-if="permReqLoading" class="section-desc">加载中…</div>
+      <table class="data-table perm-req-table" v-else-if="requests.length > 0">
+        <thead>
+          <tr>
+            <th class="col-req-email">用户邮箱</th>
+            <th class="col-req-source">来源</th>
+            <th class="col-req-name">真实姓名</th>
+            <th class="col-req-phone">手机号</th>
+            <th class="col-req-extra">补充信息</th>
+            <th class="col-req-features">开通功能</th>
+            <th class="col-req-status">状态</th>
+            <th class="col-req-action">操作</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr v-for="row in requests" :key="row.user_email">
+            <td class="col-req-email"><code :title="row.user_email">{{ displayUsername(row.user_email) }}</code></td>
+            <td class="col-req-source">
+              <span class="source-badge" :class="row.source === 'mp' ? 'source-mp' : 'source-web'">{{ row.source === 'mp' ? '小程序' : '网页' }}</span>
+            </td>
+            <td class="col-req-name">{{ row.real_name || '—' }}</td>
+            <td class="col-req-phone">{{ row.phone || '—' }}</td>
+            <td class="col-req-extra">{{ row.extra || '—' }}</td>
+            <td class="col-req-features">
+              <label v-for="f in FEATURES" :key="f.key" class="perm-feature">
+                <input type="checkbox" :value="f.key" v-model="row._features" :disabled="row._saving" /> {{ f.label }}
+              </label>
+            </td>
+            <td class="col-req-status">
+              <span
+                class="status-badge"
+                :class="row.status === 'pending' ? 'status-pending' : (row.status === 'approved' ? 'status-approved' : 'status-rejected')"
+              >{{ row.status === 'pending' ? '待审批' : (row.status === 'approved' ? '已通过' : '已驳回') }}</span>
+            </td>
+            <td class="col-req-action">
+              <template v-if="row.status === 'pending'">
+                <button class="btn-download" :disabled="row._saving" @click="approveRequest(row, row._features)">通过</button>
+                <button class="btn-remove" :disabled="row._saving" @click="rejectRequest(row)">驳回</button>
+              </template>
+              <span v-else class="text-muted">—</span>
+            </td>
+          </tr>
+        </tbody>
+      </table>
+      <p class="section-desc" v-else>暂无权限申请。</p>
+    </div>
+
     <!-- 用户分析 -->
     <div class="card" v-if="userAnalyticsReady" v-show="activeTab==='users'">
       <div class="card-title">用户分析</div>
@@ -190,6 +333,7 @@
             <th class="col-ua-firstvisit">首次访问时间</th>
             <th class="col-ua-duration">在线时间</th>
             <th class="col-ua-paths">访问路径</th>
+            <th class="col-ua-action">用户操作</th>
           </tr>
         </thead>
         <tbody>
@@ -220,6 +364,13 @@
             <td class="col-ua-duration">{{ v.durationMin > 0 ? v.durationMin + ' 分钟' : '—' }}</td>
             <td class="col-ua-paths">
               <span class="path-tag" v-for="(p, j) in v.paths" :key="j">{{ p }}</span>
+            </td>
+            <td class="col-ua-action">
+              <template v-if="v.name !== '匿名访客'">
+                <button class="btn-download ua-action-btn" type="button" :disabled="v.email === adminEmail" @click="kickUser(v)">踢出</button>
+                <button class="btn-remove ua-action-btn" type="button" :disabled="v.email === adminEmail" @click="blockVisitor(v.email)">拉黑</button>
+              </template>
+              <span v-else class="text-muted">—</span>
             </td>
           </tr>
         </tbody>
@@ -335,6 +486,36 @@
         <span>大厨先生 数据库每日自动更新，登录后即可导出每张表的 Excel 文件。</span>
       </div>
       <button class="btn-login" @click="showLogin()">登录 / 注册</button>
+    </div>
+
+    <!-- 功能开放控制（仅主管理员可调） -->
+    <div class="card" v-show="activeTab==='users'">
+      <div class="card-title">功能开放控制</div>
+      <p class="section-desc">
+        全局开关：开启后对应功能对「已登录且已开通权限」的用户可见；「内容（博客）」开启时，任何人（含未注册访客）均可直接访问。
+        仅主管理员 <strong>{{ adminEmail }}</strong> 可修改，其余授权账户仅可查看。
+      </p>
+      <div class="feature-flag-list">
+        <div class="feature-flag-row" v-for="f in toggleableFeatures" :key="f.key">
+          <div class="feature-flag-info">
+            <div class="feature-flag-label">{{ f.label }}</div>
+            <div class="feature-flag-desc">{{ f.desc }}</div>
+          </div>
+          <label class="switch" :class="{ 'switch--disabled': !isSuperAdmin }">
+            <input
+              type="checkbox"
+              :checked="featureEnabled(f.key)"
+              :disabled="!isSuperAdmin || savingFlag === f.key"
+              @change="toggleFeature(f.key, $event.target.checked)"
+            />
+            <span class="switch__track"><span class="switch__thumb"></span></span>
+            <span class="switch__state">{{ featureEnabled(f.key) ? '开放' : '关闭' }}</span>
+          </label>
+        </div>
+      </div>
+      <p v-if="!isSuperAdmin" class="feature-flag-readonly">
+        当前账户 {{ user?.email }} 为授权管理员但非主管理员，功能开关为只读。如需调整请联系主管理员 {{ adminEmail }}。
+      </p>
     </div>
 
     <!-- 数据库表列表 -->
@@ -1083,19 +1264,44 @@
         </tbody>
       </table>
     </div>
+    </template>
   </div>
 </template>
 
 <script setup>
-import { ref, computed, onMounted } from 'vue'
-import { useAuth, ADMIN_EMAIL } from '../../composables/useAuth'
+import { ref, computed, onMounted, watch } from 'vue'
+import { useAuth, FEATURES, ADMIN_EMAIL } from '../../composables/useAuth'
 import { confirm, toast } from '../../composables/useToast'
+import { usePermissionRequests } from '../../composables/usePermissionRequests'
+import { useFeatureFlags, TOGGLEABLE_FEATURES } from '../../composables/useFeatureFlags'
 
-const { isLoggedIn, showLogin } = useAuth()
+const { user, isLoggedIn, isOwner, showLogin, savePermissions, deletePermissions, blockUser } = useAuth()
+const permFeatures = FEATURES
 const adminEmail = ADMIN_EMAIL
 
-// 管理中心 tab：'download' 数据下载 / 'users' 用户分析
-const activeTab = ref('download')
+// 功能开放控制：全局开关（仅主管理员 57502460@qq.com 可改）
+const { featureEnabled, setFeatureFlag, loadFeatureFlags } = useFeatureFlags()
+const toggleableFeatures = TOGGLEABLE_FEATURES
+const isSuperAdmin = computed(() => user.value?.email === adminEmail)
+const savingFlag = ref('')
+async function toggleFeature(key, open) {
+  if (!isSuperAdmin.value) return
+  savingFlag.value = key
+  try {
+    await setFeatureFlag(key, open)
+    toast(open ? `已开放「${key}」` : `已关闭「${key}」`, 'success')
+  } catch (e) {
+    toast('操作失败：' + (e?.message || '无权限'), 'error')
+  } finally {
+    savingFlag.value = ''
+  }
+}
+
+// 管理中心 tab：'download' 数据下载 / 'users' 用户管理
+const activeTab = ref('users')
+
+// 权限申请（陌生人 → 管理员审批）
+const { requests, loading: permReqLoading, loadRequests, approveRequest, rejectRequest } = usePermissionRequests()
 
 const updateTime = ref('')
 const tableData = ref({})
@@ -1118,10 +1324,20 @@ const activeNow = ref(0)
 const activeToday = ref(0)
 const visitorList = ref([])
 
+// 用户权限管理（user_permissions）
+const permUsers = ref([])
+const permLoading = ref(false)
+const permSaving = ref(false)
+const newEmail = ref('')
+const newFeatures = ref([])
+const permMsg = ref('')
+const permMsgType = ref('')
+function clearPermMsg() { permMsg.value = '' }
 
 // 密码状态（来自 get_user_password_info RPC：是否弱密码123456 / 最后改密时间），按邮箱索引
 const passwordInfo = ref({})
 async function loadPasswordInfo() {
+  if (!isOwner.value) return
   try {
     const { supabase } = await import('../../api/supabase.js')
     if (!supabase) return
@@ -1769,13 +1985,206 @@ function displayUsername(email) {
   return email
 }
 
+async function loadPermissionsList() {
+  // 防御：主管理员邮箱始终放行（不依赖 permissions 异步加载）
+  const ownerOk = isOwner.value
+  const email = user?.email || ''
+  console.log('[perm] loadPermissionsList: isOwner=' + ownerOk + ' email=' + email)
+  if (!ownerOk) return
+  permLoading.value = true
+  try {
+    const { supabase } = await import('../../api/supabase.js')
+    if (!supabase) { console.warn('[perm] supabase client not ready'); permUsers.value = []; return }
+    // 全部注册用户（app_users，由 auth.users 触发器自动写入）
+    const { data: users, error: e1 } = await supabase
+      .from('app_users')
+      .select('id, user_email, created_at')
+      .order('created_at', { ascending: false })
+    console.log('[perm] app_users query: count=' + (users?.length || 0) + ' error=' + (e1?.message || 'none'))
+    if (e1) { console.error('[perm] app_users error', e1); permUsers.value = []; return }
+    // 已授予的权限（可能为空）
+    const { data: perms, error: e2 } = await supabase
+      .from('user_permissions')
+      .select('user_email, is_admin, enabled_features, granted_by')
+    if (e2) { console.error('[perm] perms error', e2); permUsers.value = []; return }
+    const permMap = {}
+    ;(perms || []).forEach(p => { permMap[p.user_email] = p })
+    permUsers.value = (users || []).map(u => {
+      const p = permMap[u.user_email] || {}
+      const isAdminRow = u.user_email === adminEmail || !!p.is_admin
+      // 管理员以「开通功能」中的 admin 选项呈现（与 is_admin 字段双向同步）
+      const feats = new Set(Array.isArray(p.enabled_features) ? p.enabled_features.filter(f => f !== 'all') : [])
+      if (isAdminRow) feats.add('admin')
+      return {
+        user_email: u.user_email,
+        user_id: u.id,
+        created_at: u.created_at,
+        _features: [...feats],
+        granted_by: p.granted_by || null,
+        _saving: false,
+      }
+    })
+  } catch (e) {
+    console.error('[perm] load error', e)
+    permUsers.value = []
+  } finally {
+    permLoading.value = false
+  }
+}
+
+// 踢出用户：调用 Edge Function 永久删除该账号（仅管理员）
+async function kickUser(v) {
+  if (!v.email || v.email === 'anonymous') return
+  const ok = await confirm('踢出用户', `确定要踢出用户「${displayUsername(v.email)}」吗？此操作将永久删除该账号及其全部数据，不可恢复。`)
+  if (!ok) return
+  try {
+    const { supabase, rewriteSupabaseUrl } = await import('../../api/supabase.js')
+    const { data: { session } } = await supabase.auth.getSession()
+    if (!session?.access_token) throw new Error('未登录或会话已过期')
+    const url = rewriteSupabaseUrl(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/admin-delete-user`)
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${session.access_token}`,
+      },
+      body: JSON.stringify({ email: v.email }),
+    })
+    const data = await res.json()
+    if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`)
+    toast('已踢出用户 ' + displayUsername(v.email), 'success')
+    visitorList.value = visitorList.value.filter(x => x.email !== v.email)
+    // 同步刷新权限列表（该用户可能已在 user_permissions 中有记录）
+    await loadPermissionsList()
+  } catch (e) {
+    toast('踢出失败：' + (e?.message || e), 'error')
+  }
+}
+
+// 拉黑用户：写入 blocked_users，该用户下次访问将被强制登出（仅管理员）
+async function blockVisitor(email) {
+  if (!email || email === 'anonymous') return
+  try {
+    await blockUser(email)
+    toast('已拉黑 ' + displayUsername(email), 'success')
+  } catch (e) {
+    toast('拉黑失败：' + (e?.message || e), 'error')
+  }
+}
+
+async function addPermission() {
+  const email = (newEmail.value || '').trim().toLowerCase()
+  if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+    permMsg.value = '请输入有效的邮箱地址'
+    permMsgType.value = 'perm-msg--error'
+    return
+  }
+  permSaving.value = true
+  permMsg.value = ''
+  try {
+    await savePermissions(email, { is_admin: newFeatures.value.includes('admin'), enabled_features: [...newFeatures.value] })
+    newEmail.value = ''
+    newFeatures.value = []
+    await loadPermissionsList()
+    permMsg.value = `已为 ${email} 保存权限`
+    permMsgType.value = 'perm-msg--ok'
+  } catch (e) {
+    permMsg.value = '保存失败：' + (e?.message || '未知错误')
+    permMsgType.value = 'perm-msg--error'
+  } finally {
+    permSaving.value = false
+  }
+}
+
+async function saveRow(row) {
+  row._saving = true
+  permMsg.value = ''
+  try {
+    await savePermissions(row.user_email, { is_admin: row._features.includes('admin'), enabled_features: [...row._features] })
+    await loadPermissionsList()
+    permMsg.value = `已更新 ${row.user_email} 的权限`
+    permMsgType.value = 'perm-msg--ok'
+  } catch (e) {
+    permMsg.value = '保存失败：' + (e?.message || '未知错误')
+    permMsgType.value = 'perm-msg--error'
+  } finally {
+    row._saving = false
+  }
+}
+
+async function removeRow(row) {
+  const ok = await confirm('确定删除？', `将删除 ${row.user_email} 的权限记录，该用户登录后将变为「陌生人，无访问权限」。`)
+  if (!ok) return
+  row._saving = true
+  permMsg.value = ''
+  try {
+    await deletePermissions(row.user_email)
+    await loadPermissionsList()
+    permMsg.value = `已删除 ${row.user_email} 的权限`
+    permMsgType.value = 'perm-msg--ok'
+  } catch (e) {
+    permMsg.value = '删除失败：' + (e?.message || '未知错误')
+    permMsgType.value = 'perm-msg--error'
+  } finally {
+    row._saving = false
+  }
+}
+
+// 重置用户密码为默认 123456（仅管理员；主管理员自身不可重置，避免误锁账号）
+async function resetPassword(row) {
+  const email = row.user_email
+  if (!email || email === adminEmail) return
+  const ok = await confirm(
+    '重置密码',
+    `确定要将用户「${displayUsername(email)}」的密码重置为默认密码 123456 吗？该用户下次登录需使用 123456，请务必通过安全渠道告知对方。`
+  )
+  if (!ok) return
+  row._saving = true
+  permMsg.value = ''
+  try {
+    const { supabase, rewriteSupabaseUrl } = await import('../../api/supabase.js')
+    const { data: { session } } = await supabase.auth.getSession()
+    if (!session?.access_token) throw new Error('未登录或会话已过期')
+    const url = rewriteSupabaseUrl(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/admin-reset-password`)
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${session.access_token}`,
+      },
+      body: JSON.stringify({ email }),
+    })
+    const data = await res.json()
+    if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`)
+    toast('已将 ' + displayUsername(email) + ' 的密码重置为 123456', 'success')
+  } catch (e) {
+    toast('重置失败：' + (e?.message || e), 'error')
+  } finally {
+    row._saving = false
+  }
+}
+
 onMounted(() => {
   loadIndex()
   loadEtlBrief()
   loadUserAnalytics()
+  loadPermissionsList()
+  loadRequests()
   loadPasswordInfo()
+  loadFeatureFlags()
 })
 
+// 保底：auth 初始化时序可能导致 onMounted 时 isOwner 尚未为 true
+// watch 确保一旦 isOwner 变为 true（permissions 异步加载完成）立即加载用户列表
+watch(isOwner, (val) => {
+  if (val && permUsers.value.length === 0) {
+    console.log('[perm] watch(isOwner) triggered reload, email=' + (user?.email || ''))
+    loadPermissionsList()
+  }
+  if (val) {
+    loadPasswordInfo()
+  }
+})
 </script>
 
 <style scoped>
@@ -1789,6 +2198,14 @@ onMounted(() => {
   font-size: 16px; color: var(--text-secondary); margin: 0 0 var(--space-xl);
   line-height: 1.6;
 }
+
+/* 无访问权限提示 */
+.no-access {
+  background: #fff; border: 1px solid var(--border); border-left: 4px solid #d4351c;
+  padding: var(--space-lg); margin-bottom: var(--space-xl);
+}
+.no-access__title { font-size: 18px; font-weight: 700; color: #d4351c; margin: 0 0 var(--space-xs); }
+.no-access__desc { font-size: 14px; color: var(--text-secondary); margin: 0; line-height: 1.6; }
 
 /* 登录提示横幅 */
 .login-banner {
@@ -1813,6 +2230,34 @@ onMounted(() => {
 }
 .card-title { font-size: 24px; font-weight: 700; color: var(--text-primary); margin-bottom: var(--space-md); }
 .section-desc { font-size: 16px; color: var(--text-secondary); margin-bottom: var(--space-lg); }
+
+/* ===== 功能开放控制 ===== */
+.feature-flag-list { display: flex; flex-direction: column; margin-top: var(--space-md); }
+.feature-flag-row {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: var(--space-md); padding: var(--space-md) 0;
+  border-bottom: 1px solid var(--border);
+}
+.feature-flag-row:last-child { border-bottom: none; }
+.feature-flag-info { flex: 1; }
+.feature-flag-label { font-size: 18px; font-weight: 700; color: var(--text-primary); }
+.feature-flag-desc { font-size: 14px; color: var(--text-secondary); margin-top: 4px; line-height: 1.5; }
+
+.switch { display: inline-flex; align-items: center; gap: 10px; cursor: pointer; flex-shrink: 0; }
+.switch--disabled { cursor: not-allowed; opacity: 0.7; }
+.switch input { position: absolute; opacity: 0; width: 0; height: 0; }
+.switch__track {
+  position: relative; width: 52px; height: 28px;
+  background: #b1b4b6; border: 2px solid #0b0c0c; transition: background 0.15s;
+}
+.switch__thumb {
+  position: absolute; top: 2px; left: 2px; width: 20px; height: 20px;
+  background: #0b0c0c; transition: transform 0.15s, background 0.15s;
+}
+.switch input:checked + .switch__track { background: #1d70b8; }
+.switch input:checked + .switch__track .switch__thumb { transform: translateX(24px); background: #ffffff; }
+.switch__state { font-size: 14px; font-weight: 700; min-width: 32px; color: var(--text-primary); }
+.feature-flag-readonly { margin-top: var(--space-md); color: #d4351c; font-weight: 700; }
 
 /* 项目简介 */
 .intro-grid { border: 1px solid var(--border); }
@@ -1891,6 +2336,17 @@ onMounted(() => {
 .status-pending { background: #f3f2f1; color: #6b7280; }
 .status-cancelled { background: #b53c00; color: #fff; }
 .status-skipped { background: #b1b4b6; color: #0b0c0c; }
+.source-badge {
+  display: inline-block;
+  padding: 2px 10px;
+  font-size: 12px;
+  font-weight: 700;
+  border-radius: 2px;
+  text-align: center;
+  white-space: nowrap;
+}
+.source-mp { background: #1d70b8; color: #fff; }
+.source-web { background: #f3f2f1; color: #505a5f; }
 @keyframes pulse {
   0%, 100% { opacity: 1; } 50% { opacity: 0.5; }
 }
@@ -1974,6 +2430,9 @@ onMounted(() => {
 .col-ua-firstvisit { width: 160px; font-family: monospace; }
 .col-ua-duration { width: 100px; text-align: right; font-family: monospace; }
 .col-ua-paths { min-width: 240px; }
+.col-ua-action { width: 150px; white-space: nowrap; }
+.ua-action-btn { margin: 2px 4px 2px 0; padding: 4px 10px; font-size: 13px; }
+.ua-action-btn:disabled { opacity: 0.5; cursor: not-allowed; }
 .path-tag {
   display: inline-block; background: #f3f2f1; border: 1px solid var(--border);
   border-radius: 2px; padding: 1px 6px; margin: 2px 4px 2px 0; font-size: 12px;
@@ -2189,6 +2648,49 @@ onMounted(() => {
 .flow-arrow { font-size: 24px; color: #1d70b8; font-weight: 700; }
 .flow-arrow-up { font-size: 28px; }
 
+/* ========== 用户权限管理 ========== */
+.perm-add {
+  display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-md);
+  padding: var(--space-md); border: 1px solid var(--border); background: #f8f8f8;
+  margin-bottom: var(--space-md);
+}
+.perm-email-input {
+  flex: 1; min-width: 240px; padding: var(--space-sm);
+  border: 1px solid var(--border); font-size: 16px; box-sizing: border-box;
+}
+.perm-email-input:focus { outline: 2px solid #1d70b8; outline-offset: -1px; }
+.perm-features { display: flex; flex-wrap: wrap; gap: var(--space-md); }
+.perm-feature {
+  display: inline-flex; align-items: center; gap: 6px;
+  font-size: 15px; font-weight: 700; color: var(--text-primary); cursor: pointer;
+}
+.perm-feature input { width: 16px; height: 16px; accent-color: #1d70b8; }
+.perm-msg {
+  font-size: 14px; font-weight: 700; padding: var(--space-sm) var(--space-md);
+  margin-bottom: var(--space-md); border-left: 4px solid transparent;
+}
+.perm-msg--ok { color: #00703c; background: #f0faf3; border-left-color: #00703c; }
+.perm-msg--error { color: #d4351c; background: #fdf3f2; border-left-color: #d4351c; }
+
+.perm-table .col-perm-email { min-width: 200px; }
+.perm-table .col-perm-features { min-width: 280px; }
+.perm-table .col-perm-granted { width: 140px; }
+.perm-table .col-perm-action { width: 140px; white-space: nowrap; }
+.perm-table .perm-feature { margin-right: var(--space-sm); }
+.perm-all { font-size: 14px; font-weight: 700; color: #1d70b8; }
+.btn-remove {
+  background: #ffffff; color: #d4351c; border: 1px solid #d4351c;
+  padding: 4px 10px; font-size: 14px; font-weight: 700; cursor: pointer; margin-left: 6px;
+}
+.btn-remove:hover:not(:disabled) { background: #d4351c; color: #ffffff; }
+.btn-remove:disabled { opacity: 0.5; cursor: not-allowed; }
+.btn-reset {
+  background: #ffffff; color: #f47738; border: 1px solid #f47738;
+  padding: 4px 10px; font-size: 14px; font-weight: 700; cursor: pointer; margin-left: 6px;
+}
+.btn-reset:hover:not(:disabled) { background: #f47738; color: #ffffff; }
+.btn-reset:disabled { opacity: 0.5; cursor: not-allowed; }
+
 /* ===== 管理中心 header + tabs ===== */
 .mgmt-header { margin: 0 0 var(--space-lg); }
 .mgmt-title {
@@ -2211,6 +2713,32 @@ onMounted(() => {
   border-bottom-color: #1d70b8;
 }
 
+/* 全部 / 全否 快捷按钮 */
+.perm-quick {
+  display: flex; gap: var(--space-sm); margin-bottom: var(--space-sm);
+  flex-wrap: wrap;
+}
+.btn-all, .btn-none {
+  padding: 4px 14px; font-size: 13px; font-weight: 700; cursor: pointer;
+  border: 1px solid #1d70b8; background: #fff; color: #1d70b8;
+  white-space: nowrap;
+}
+.btn-all:hover:not(:disabled), .btn-none:hover:not(:disabled) { background: #eaf2fb; }
+.btn-all:disabled, .btn-none:disabled { opacity: 0.5; cursor: not-allowed; }
+
+/* 权限申请表 */
+.perm-req-table .col-req-email { min-width: 200px; }
+.perm-req-table .col-req-source { width: 90px; text-align: center; }
+.perm-req-table .col-req-name { width: 100px; }
+.perm-req-table .col-req-phone { width: 120px; }
+.perm-req-table .col-req-extra { min-width: 160px; }
+.perm-req-table .col-req-features { min-width: 280px; }
+.perm-req-table .col-req-status { width: 90px; text-align: center; }
+.perm-req-table .col-req-action { width: 140px; white-space: nowrap; }
+.perm-req-table .perm-feature { margin-right: var(--space-sm); }
+
 /* 权限申请状态徽章 */
 .status-pending { background: #f3f2f1; color: #6b7280; }
+.status-approved { background: #00703c; color: #fff; }
+.status-rejected { background: #d4351c; color: #fff; }
 </style>
